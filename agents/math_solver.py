@@ -17,6 +17,10 @@ class MathSolver(Node):
             id=None, agent_name="MathSolver", domain=domain, llm_name=llm_name
         )
         self.role = "Math Solver"  # 修正角色名称
+
+        # 调试断点1：显示MathSolver的角色分配
+        print(f"🔍 [调试] MathSolver {self.id} 被分配角色: '{self.role}'")
+
         self.llm = LLMRegistry.get(llm_name) if llm_name else None
         self.prompt_set = (
             PromptSetRegistry.get("Math_nocot") if domain == "gsm8k" else None
@@ -37,6 +41,14 @@ class MathSolver(Node):
                 prompt = self.prompt_set.get_answer_prompt(problem, self.role)
             else:
                 prompt = f"Please solve this math problem step by step: {problem}"
+
+            # 调试断点2：显示构建的完整prompt
+            print(f"🔍 [调试] MathSolver {self.id} 角色 '{self.role}' 的完整prompt:")
+            print(f"--- 开始 ---")
+            print(prompt)
+            print(f"--- 结束 ---")
+
+            print(f"Prompt: {prompt}")
 
             # 如果有LLM，使用LLM求解，否则返回简单回复
             if self.llm:
@@ -63,6 +75,16 @@ class MathSolver(Node):
                 prompt = self.prompt_set.get_answer_prompt(problem, self.role)
             else:
                 prompt = f"Please solve this math problem step by step: {problem}"
+
+            # 调试断点3：显示异步执行的完整prompt
+            print(
+                f"🔍 [调试] MathSolver {self.id} 异步执行 - 角色 '{self.role}' 的完整prompt:"
+            )
+            print(f"--- 开始 ---")
+            print(prompt)
+            print(f"--- 结束 ---")
+
+            print(f"Async Prompt: {prompt}")
 
             # 如果有LLM，使用LLM求解，否则返回简单回复
             if self.llm:

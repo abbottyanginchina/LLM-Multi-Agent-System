@@ -63,7 +63,7 @@ class ChatGPT(LLM):
         if temperature is None:
             temperature = self.DEFAULT_TEMPERATURE
         if num_comps is None:
-            num_comps = self.DEFAULT_NUM_COMPS
+            num_comps = self.DEFUALT_NUM_COMPLETIONS
 
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]

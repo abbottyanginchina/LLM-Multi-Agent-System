@@ -120,6 +120,7 @@ async def main():
     args = parse_args()
     result_file = None
     # 数据集处理
+    # 构建数据集文件的完整路径
     dataset_path = ROOT / "dataset" / args.dataset_json
     dataset = JSONLReader.parse_file(dataset_path)
     dataset = data_process(dataset)
@@ -150,7 +151,7 @@ async def main():
     )
 
     num_batches = int(len(dataset) / args.batch_size)
-    total_solved, total_executed = 0
+    total_solved, total_executed = 0, 0
 
     for i_batch in range(num_batches):
         print(f"Batch {i_batch}", 80 * "-")
@@ -183,14 +184,16 @@ async def main():
             current_batch, raw_answers, log_probs, answers
         ):
             predict_answer = get_predict(answer[0])
+
+            # 安全地比较答案，处理None值
             try:
                 if predict_answer is not None and true_answer is not None:
                     is_solved = float(predict_answer) == float(true_answer)
                 else:
                     is_solved = False
-            except(ValueError, TypeError):
+            except (ValueError, TypeError):
                 is_solved = False
-            
+
             total_solved = total_solved + is_solved
             total_executed = total_executed + 1
             accuracy = total_solved / total_executed

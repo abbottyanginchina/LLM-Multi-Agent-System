@@ -103,6 +103,12 @@ class Graph(ABC):
                 kwargs["domain"] = self.domain
                 kwargs["llm_name"] = self.llm_name
                 agent_instance = AgentRegistry.get(agent_name, **kwargs)
+
+                # 调试断点5：显示Graph中创建的agent实例及其角色
+                print(
+                    f"🔍 [调试] Graph 创建 {agent_name} 实例 ID: {agent_instance.id}, 角色: {getattr(agent_instance, 'role', 'N/A')}"
+                )
+
                 self.add_node(agent_instance)
 
     def clear_connection(self):

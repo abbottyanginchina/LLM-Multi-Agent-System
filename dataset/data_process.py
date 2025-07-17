@@ -16,7 +16,25 @@ def data_process(dataset):
 
 
 def get_predict(pred_str):
-    """从预测字符串中提取数值答案"""
+    """从预测字符串中提取答案 - 支持MMLU选择题和数学题"""
+    if not isinstance(pred_str, str):
+        pred_str = str(pred_str)
+
+    # 先尝试提取MMLU格式的选择题答案 (A, B, C, D)
+    # 查找单独的字母答案
+    choice_pattern = r"\b[ABCD]\b"
+    choice_matches = re.findall(choice_pattern, pred_str)
+    if choice_matches:
+        return choice_matches[0]  # 返回第一个找到的选择
+
+    # 查找行首的字母答案
+    lines = pred_str.split("\n")
+    for line in lines:
+        line = line.strip()
+        if line and line[0] in "ABCD" and (len(line) == 1 or line[1] in ". ):"):
+            return line[0]
+
+    # 如果没找到选择题答案，尝试数学题格式
     if "The answer is " in pred_str:
         pred = pred_str.split("The answer is ")[-1].strip()
     elif "the answer is " in pred_str:
