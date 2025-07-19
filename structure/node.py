@@ -43,18 +43,20 @@ class Node(ABC):
         self,
         id: Optional[str],
         agent_name: str = "",
-        domain: str = "",
-        llm_name: str = "",
     ):
+        """
+        Initializes a new Node instance.
+        """
         self.id: str = id if id is not None else shortuuid.ShortUUID().random(length=4)
         self.agent_name: str = agent_name
-        self.domain: str = domain
-        self.llm_name: str = llm_name
+        self.llm_name: str = ""
         self.inputs: List[Any] = []
         self.outputs: List[Any] = []
         self.raw_inputs: List[Any] = []
-        self.predecessors: List[Node] = []
-        self.successors: List[Node] = []
+        self.spatial_predecessors: List[Node] = []
+        self.spatial_successors: List[Node] = []
+        self.temporal_predecessors: List[Node] = []
+        self.temporal_successors: List[Node] = []
         self.role = ""
         self.last_memory: Dict[str, List[Any]] = {
             "inputs": [],
@@ -69,40 +71,54 @@ class Node(ABC):
     def node_name(self):
         return self.__class__.__name__
 
-    def add_predecessor(self, operation: "Node"):
-        if operation not in self.predecessors:
-            self.predecessors.append(operation)
-            operation.add_successor(self)
+    def add_predecessor(self, operation: "Node", st="spatial"):
+        if st == "spatial" and operation not in self.spatial_predecessors:
+            self.spatial_predecessors.append(operation)
+            operation.spatial_successors.append(self)
+        elif st == "temporal" and operation not in self.temporal_predecessors:
+            self.temporal_predecessors.append(operation)
+            operation.temporal_successors.append(self)
 
-    def add_successor(self, operation: "Node"):
-        if operation not in self.successors:
-            self.successors.append(operation)
-            operation.add_predecessor(self)
+    def add_successor(self, operation: "Node", st="spatial"):
+        if st == "spatial" and operation not in self.spatial_successors:
+            self.spatial_successors.append(operation)
+            operation.spatial_predecessors.append(self)
+        elif st == "temporal" and operation not in self.temporal_successors:
+            self.temporal_successors.append(operation)
+            operation.temporal_predecessors.append(self)
 
-    def remove_predecessor(self, operation: "Node"):
-        if operation in self.predecessors:
-            self.predecessors.remove(operation)
-            operation.remove_successor(self)
+    def remove_predecessor(self, operation: "Node", st="spatial"):
+        if st == "spatial" and operation in self.spatial_predecessors:
+            self.spatial_predecessors.remove(operation)
+            operation.spatial_successors.remove(self)
+        elif st == "temporal" and operation in self.temporal_predecessors:
+            self.temporal_predecessors.remove(operation)
+            operation.temporal_successors.remove(self)
 
-    def remove_successor(self, operation: "Node"):
-        if operation in self.successors:
-            self.successors.remove(operation)
-            operation.remove_predecessor(self)
+    def remove_successor(self, operation: "Node", st="spatial"):
+        if st == "spatial" and operation in self.spatial_successors:
+            self.spatial_successors.remove(operation)
+            operation.spatial_predecessors.remove(self)
+        elif st == "temporal" and operation in self.temporal_successors:
+            self.temporal_successors.remove(operation)
+            operation.temporal_predecessors.remove(self)
 
     def clear_connections(self):
-        self.predecessors: List[Node] = []
-        self.successors: List[Node] = []
+        self.spatial_predecessors: List[Node] = []
+        self.spatial_successors: List[Node] = []
+        self.temporal_predecessors: List[Node] = []
+        self.temporal_successors: List[Node] = []
 
     def update_memory(self):
         self.last_memory["inputs"] = self.inputs.copy()
         self.last_memory["outputs"] = self.outputs.copy()
         self.last_memory["raw_inputs"] = self.raw_inputs.copy()
 
-    def get_info(self) -> Dict[str, Dict]:
+    def get_spatial_info(self) -> Dict[str, Dict]:
         """Return a dict that maps id to info."""
-        info = {}
-        if self.predecessors is not None:
-            for predecessor in self.predecessors:
+        spatial_info = {}
+        if self.spatial_predecessors is not None:
+            for predecessor in self.spatial_predecessors:
                 predecessor_outputs = predecessor.outputs
                 if isinstance(predecessor_outputs, list) and len(predecessor_outputs):
                     predecessor_output = predecessor_outputs[-1]
@@ -113,16 +129,38 @@ class Node(ABC):
                     continue
                 else:
                     predecessor_output = predecessor_outputs
-                info[predecessor.id] = {
+                spatial_info[predecessor.id] = {
                     "role": predecessor.role,
                     "output": predecessor_output,
                 }
-        return info
+        return spatial_info
+
+    def get_temporal_info(self) -> Dict[str, Any]:
+        temporal_info = {}
+        if self.temporal_predecessors is not None:
+            for predecessor in self.temporal_predecessors:
+                predecessor_outputs = predecessor.last_memory["outputs"]
+                if isinstance(predecessor_outputs, list) and len(predecessor_outputs):
+                    predecessor_output = predecessor_outputs[-1]
+                elif (
+                    isinstance(predecessor_outputs, list)
+                    and len(predecessor_outputs) == 0
+                ):
+                    continue
+                else:
+                    predecessor_output = predecessor_outputs
+                temporal_info[predecessor.id] = {
+                    "role": predecessor.role,
+                    "output": predecessor_output,
+                }
+
+        return temporal_info
 
     def execute(self, input: Any, **kwargs):
         self.outputs = []
-        info: Dict[str, Dict] = self.get_info()
-        results = [self._execute(input, info, **kwargs)]
+        spatial_info: Dict[str, Dict] = self.get_spatial_info()
+        temporal_info: Dict[str, Dict] = self.get_temporal_info()
+        results = [self._execute(input, spatial_info, temporal_info, **kwargs)]
 
         for result in results:
             if not isinstance(result, list):
@@ -132,8 +170,13 @@ class Node(ABC):
 
     async def async_execute(self, input: Any, **kwargs):
         self.outputs = []
-        info: Dict[str, Any] = self.get_info()
-        tasks = [asyncio.create_task(self._async_execute(input, info, **kwargs))]
+        spatial_info: Dict[str, Any] = self.get_spatial_info()
+        temporal_info: Dict[str, Any] = self.get_temporal_info()
+        tasks = [
+            asyncio.create_task(
+                self._async_execute(input, spatial_info, temporal_info, **kwargs)
+            )
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=False)
         for result in results:
             if not isinstance(result, list):
@@ -142,18 +185,34 @@ class Node(ABC):
         return self.outputs
 
     @abstractmethod
-    def _execute(self, input: List[Any], info: Dict[str, Any], **kwargs):
+    def _execute(
+        self,
+        input: List[Any],
+        spatial_info: Dict[str, Any],
+        temporal_info: Dict[str, Any],
+        **kwargs
+    ):
         """To be overriden by the descendant class"""
         """ Use the processed input to get the result """
 
     @abstractmethod
-    async def _async_execute(self, input: List[Any], info: Dict[str, Any], **kwargs):
+    async def _async_execute(
+        self,
+        input: List[Any],
+        spatial_info: Dict[str, Any],
+        temporal_info: Dict[str, Any],
+        **kwargs
+    ):
         """To be overriden by the descendant class"""
         """ Use the processed input to get the result """
 
     @abstractmethod
     def _process_inputs(
-        self, raw_inputs: List[Any], info: Dict[str, Any], **kwargs
+        self,
+        raw_inputs: List[Any],
+        spatial_info: Dict[str, Any],
+        temporal_info: Dict[str, Any],
+        **kwargs
     ) -> List[Any]:
         """To be overriden by the descendant class"""
         """ Process the raw_inputs(most of the time is a List[Dict]) """

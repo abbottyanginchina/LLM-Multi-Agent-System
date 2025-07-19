@@ -16,15 +16,22 @@ class LLMRegistry:
         return cls.registry.keys()
 
     @classmethod
-    def get(cls, model_name: Optional[str] = None) -> LLM:
-        if model_name is None or model_name == "":
-            model_name = "gpt-4o"
-
-        if model_name == "mock":
-            model = cls.registry.get(model_name)
-        elif "deepseek" in model_name:
-            model = cls.registry.get("deepseek", model_name)
-        else:  # any version of ChatGPT like "gpt-4o"
-            model = cls.registry.get("ChatGPT", model_name)
-
-        return model
+    def get(cls, role: Optional[str] = None) -> LLM:
+        # 根据角色返回对应的LLM实例
+        # 暂时统一使用deepseek-chat
+        try:
+            if role is None or role == "":
+                # 默认模型
+                return cls.registry.get("deepseek", "deepseek-chat")
+            elif "Planner" in role:
+                return cls.registry.get("deepseek", "deepseek-chat")
+            elif "Copywriter" in role:
+                return cls.registry.get("deepseek", "deepseek-chat")
+            elif "Polisher" in role:
+                return cls.registry.get("deepseek", "deepseek-chat")
+            elif "Critic" in role:
+                return cls.registry.get("deepseek", "deepseek-chat")
+            else:
+                return cls.registry.get("deepseek", "deepseek-chat")
+        except Exception as e:
+            print(f"Warning: Failed to get LLM for role {role}: {e}")

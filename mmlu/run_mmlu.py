@@ -43,7 +43,6 @@ def parse_args():
         ],
         help="Mode of operation. Default is 'FullConnected'.",
     )
-    parser.add_argument("--lr", type=float, default=0.1, help="learning rate")
     parser.add_argument(
         "--agent_names",
         nargs="+",
@@ -67,14 +66,7 @@ def parse_args():
     parser.add_argument(
         "--llm_name",
         type=str,
-        default="deepseek-chat",
-        help="Model name, None runs the default ChatGPT4",
-    )
-    parser.add_argument(
-        "--domain",
-        type=str,
-        default="mmlu",
-        help="Domain (the same as dataset name), default 'MMLU'",
+        default="",
     )
     parser.add_argument(
         "--decision_method",
@@ -102,8 +94,6 @@ async def main():
     kwargs = get_kwargs(mode, len(agent_names))
 
     graph = Graph(
-        domain=args.domain,
-        llm_name=args.llm_name,
         agent_names=agent_names,
         decision_method=decision_method,
         **kwargs,

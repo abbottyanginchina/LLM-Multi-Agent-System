@@ -1,4 +1,5 @@
 from abc import ABC
+import asyncio
 from typing import Any, List, Optional, Dict
 import shortuuid
 import numpy as np
@@ -20,7 +21,6 @@ class Graph(ABC):
     The communication of the node depends on the node.spatial_predecessors and node.spatial_successors.
 
     Attributes:
-        domain (str): The domain for which this graph is used.
         llm_name (str): The name of the llm that used for processing within the nodes.
         nodes (dict): A collection of nodes, each identified by a unique UUID.
 
@@ -32,37 +32,68 @@ class Graph(ABC):
 
     def __init__(
         self,
-        domain: str,
-        llm_name: Optional[str],
         agent_names: List[str],
         decision_method: str,
+        fixed_spatial_masks: List[List[int]] = None,
+        fixed_temporal_masks: List[List[int]] = None,
         node_kwargs: List[Dict] = None,
     ):
+        if fixed_spatial_masks is None:
+            fixed_spatial_masks = [
+                [1 if i != j else 0 for j in range(len(agent_names))]
+                for i in range(len(agent_names))
+            ]
+        if fixed_temporal_masks is None:
+            fixed_temporal_masks = [
+                [1 for j in range(len(agent_names))] for i in range(len(agent_names))
+            ]
+        fixed_spatial_masks = torch.tensor(fixed_spatial_masks).view(-1)
+        fixed_temporal_masks = torch.tensor(fixed_temporal_masks).view(-1)
+
+        assert len(fixed_spatial_masks) == len(agent_names) * len(
+            agent_names
+        ), "The fixed_spatial_masks doesn't match the number of agents"
+        assert len(fixed_temporal_masks) == len(agent_names) * len(
+            agent_names
+        ), "The fixed_temporal_masks doesn't match the number of agents"
+
         self.id: str = shortuuid.ShortUUID().random(length=4)
-        self.domain: str = domain
-        self.llm_name: str = llm_name
+        self.llm_name: str = ""
         self.agent_names: List[str] = agent_names
         self.decision_node: Node = AgentRegistry.get(
-            decision_method, **{"domain": self.domain, "llm_name": self.llm_name}
+            decision_method, agent_name="FinalDecision"
         )
         self.nodes: Dict[str, Node] = {}
+        self.potential_spatial_edges: List[List[str, str]] = []
+        self.potential_temporal_edges: List[List[str, str]] = []
         self.node_kwargs = (
             node_kwargs if node_kwargs is not None else [{} for _ in agent_names]
         )
-
-        # 初始化用于优化的logits参数
-        num_agents = len(agent_names)
-        self.spatial_logits = torch.nn.Parameter(torch.randn(num_agents, num_agents))
-        self.temporal_logits = torch.nn.Parameter(torch.randn(num_agents))
-
         self.init_nodes()  # add nodes to the self.nodes
+        self.init_potential_edges()  # add potential edges to the self.potential_spatial/temporal_edges
+
+        self.spatial_masks = torch.nn.Parameter(
+            fixed_spatial_masks, requires_grad=False
+        )  # fixed edge masks
+        self.temporal_masks = torch.nn.Parameter(
+            fixed_temporal_masks, requires_grad=False
+        )  # fixed edge masks
 
     @property
-    def adj_matrix(self):
+    def spatial_adj_matrix(self):
         matrix = np.zeros((len(self.nodes), len(self.nodes)))
         for i, node1_id in enumerate(self.nodes):
             for j, node2_id in enumerate(self.nodes):
-                if self.nodes[node2_id] in self.nodes[node1_id].successors:
+                if self.nodes[node2_id] in self.nodes[node1_id].spatial_successors:
+                    matrix[i, j] = 1
+        return matrix
+
+    @property
+    def temporal_adj_matrix(self):
+        matrix = np.zeros((len(self.nodes), len(self.nodes)))
+        for i, node1_id in enumerate(self.nodes):
+            for j, node2_id in enumerate(self.nodes):
+                if self.nodes[node2_id] in self.nodes[node1_id].temporal_successors:
                     matrix[i, j] = 1
         return matrix
 
@@ -70,7 +101,7 @@ class Graph(ABC):
     def num_edges(self):
         num_edges = 0
         for node in self.nodes.values():
-            num_edges += len(node.successors)
+            num_edges += len(node.spatial_successors)
         return num_edges
 
     @property
@@ -100,26 +131,43 @@ class Graph(ABC):
         """
         for agent_name, kwargs in zip(self.agent_names, self.node_kwargs):
             if agent_name in AgentRegistry.registry:
-                kwargs["domain"] = self.domain
-                kwargs["llm_name"] = self.llm_name
+                # 不再传递llm_name，让agent根据role自动获取对应的LLM
                 agent_instance = AgentRegistry.get(agent_name, **kwargs)
 
                 # 调试断点5：显示Graph中创建的agent实例及其角色
+                # 输出每个agent的id和角色
                 print(
                     f"🔍 [调试] Graph 创建 {agent_name} 实例 ID: {agent_instance.id}, 角色: {getattr(agent_instance, 'role', 'N/A')}"
                 )
 
                 self.add_node(agent_instance)
 
-    def clear_connection(self):
+    def init_potential_edges(self):
         """
-        clear all connections of the nodes in the graph
+        Creates and potential edges to the graph.
+        """
+        for node1_id in self.nodes.keys():
+            for node2_id in self.nodes.keys():
+                self.potential_spatial_edges.append([node1_id, node2_id])
+                self.potential_temporal_edges.append([node1_id, node2_id])
+
+    def clear_spatial_connection(self):
+        """
+        Clear all the spatial connection of the nodes in the graph.
         """
         for node_id in self.nodes.keys():
-            self.nodes[node_id].predecessors = []
-            self.nodes[node_id].successors = []
-        self.decision_node.predecessors = []
-        self.decision_node.successors = []
+            self.nodes[node_id].spatial_predecessors = []
+            self.nodes[node_id].spatial_successors = []
+        self.decision_node.spatial_predecessors = []
+        self.decision_node.spatial_successors = []
+
+    def clear_temporal_connection(self):
+        """
+        Clear all the temporal connection of the nodes in the graph.
+        """
+        for node_id in self.nodes.keys():
+            self.nodes[node_id].temporal_predecessors = []
+            self.nodes[node_id].temporal_successors = []
 
     def connect_decision_node(self, last_node_id: str = None):
         for node_id in self.nodes.keys():
@@ -128,29 +176,35 @@ class Graph(ABC):
             elif last_node_id == node_id:
                 self.nodes[node_id].add_successor(self.decision_node)
 
-    def construct_connection(self):
-        """构建简单的图连接 - 目前不进行优化剪枝"""
-        self.clear_connection()
+    def construct_spatial_connection(self):
+        self.clear_spatial_connection()
 
-        # 改进的连接策略：确保至少有一个节点入度为0
-        node_ids = list(self.nodes.keys())
-        num_nodes = len(node_ids)
+        for potential_connection, edge_mask in zip(
+            self.potential_spatial_edges, self.spatial_masks
+        ):
+            out_node: Node = self.find_node(potential_connection[0])
+            in_node: Node = self.find_node(potential_connection[1])
+            if edge_mask == 0.0:
+                continue
+            elif edge_mask == 1.0:
+                if not self.check_cycle(in_node, {out_node}):
+                    out_node.add_successor(in_node, "spatial")
+                continue
 
-        if num_nodes == 0:
-            return torch.tensor(0.0)
+    def construct_temporal_connection(self):
+        self.clear_temporal_connection()
 
-        if num_nodes == 1:
-            # 只有一个节点，不需要连接
-            return torch.tensor(0.0)
-
-        # 对于多个节点，创建链式连接：node0 -> node1 -> node2 -> ... -> nodeN
-        # 这样node0的入度为0，可以开始执行
-        for i in range(num_nodes - 1):
-            out_node = self.nodes[node_ids[i]]
-            in_node = self.nodes[node_ids[i + 1]]
-            out_node.add_successor(in_node)
-
-        return torch.tensor(0.0)  # 简化：不计算log_probs
+        for potential_connection, edge_mask in zip(
+            self.potential_temporal_edges, self.temporal_masks
+        ):
+            out_node: Node = self.find_node(potential_connection[0])
+            in_node: Node = self.find_node(potential_connection[1])
+            if edge_mask == 0.0:
+                continue
+            elif edge_mask == 1.0:
+                if not self.check_cycle(in_node, {out_node}):
+                    out_node.add_successor(in_node, "temporal")
+                continue
 
     def run(
         self,
@@ -160,12 +214,13 @@ class Graph(ABC):
         aggregate_mode: str = "all connected",
     ) -> List[Any]:
         # inputs:{'task':"xxx"}
-        log_probs = torch.tensor(0.0)
-        current_node_id = None  # 初始化变量
         for round in range(num_rounds):
-            log_probs += self.construct_connection()
+            self.construct_spatial_connection()
+            self.construct_temporal_connection()
+
             in_degree = {
-                node_id: len(node.predecessors) for node_id, node in self.nodes.items()
+                node_id: len(node.spatial_predecessors)
+                for node_id, node in self.nodes.items()
             }
             zero_in_degree_queue = [
                 node_id for node_id, deg in in_degree.items() if deg == 0
@@ -183,7 +238,7 @@ class Graph(ABC):
                     except Exception as e:
                         print(f"Error executing node {current_node_id}: {e}")
                     tries += 1
-                for successor in self.nodes[current_node_id].successors:
+                for successor in self.nodes[current_node_id].spatial_successors:
                     if successor.id not in self.nodes.keys():
                         continue
                     in_degree[successor.id] -= 1
@@ -201,21 +256,20 @@ class Graph(ABC):
         if len(final_answers) == 0:
             final_answers.append("No answer found")
 
-        return final_answers, log_probs
+        return final_answers
 
     async def arun(
         self,
         input: Dict[str, str],
         num_rounds: int = 3,
         max_tries: int = 3,
+        max_time: int = 600,
         aggregate_mode: str = "all connected",
     ) -> List[Any]:
-        log_probs = torch.tensor(0.0)
-        current_node_id = None  # 初始化变量
         for round in range(num_rounds):
-            log_probs += self.construct_connection()
             in_degree = {
-                node_id: len(node.predecessors) for node_id, node in self.nodes.items()
+                node_id: len(node.spatial_predecessors)
+                for node_id, node in self.nodes.items()
             }
             zero_in_degree_queue = [
                 node_id for node_id, deg in in_degree.items() if deg == 0
@@ -226,12 +280,15 @@ class Graph(ABC):
                 tries = 0
                 while tries < max_tries:
                     try:
-                        await self.nodes[current_node_id].async_execute(input)
+                        await asyncio.wait_for(
+                            self.nodes[current_node_id].async_execute(input),
+                            timeout=max_time,
+                        )
                         break
                     except Exception as e:
                         print(f"Error executing node {current_node_id}: {e}")
                     tries += 1
-                for successor in self.nodes[current_node_id].successors:
+                for successor in self.nodes[current_node_id].spatial_successors:
                     if successor.id not in self.nodes.keys():
                         continue
                     in_degree[successor.id] -= 1
@@ -247,8 +304,16 @@ class Graph(ABC):
         final_answers = self.decision_node.outputs
         if len(final_answers) == 0:
             final_answers.append("No answer found")
-        return final_answers, log_probs
+        return final_answers
 
     def update_memory(self):
         for id, node in self.nodes.items():
             node.update_memory()
+
+    def check_cycle(self, new_node, target_nodes):
+        if new_node in target_nodes:
+            return True
+        for successor in new_node.spatial_successors:
+            if self.check_cycle(successor, target_nodes):
+                return True
+        return False

@@ -1,0 +1,14 @@
+{
+  "task": {
+    "theme": "A tale of friendship and adventure",
+    "genre": "Fantasy",
+    "setting": "A medieval kingdom threatened by dark forces",
+    "tone": "Hopeful and epic",
+    "length": "Approximately 1000 words",
+    "constraints": [
+      "Include at least one plot twist",
+      "Begin with a vivid scene description",
+      "End with a sense of triumph and resolution"
+    ]
+  }
+}

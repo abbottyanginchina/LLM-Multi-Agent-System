@@ -26,14 +26,16 @@ class JSONLReader(Reader):
 
 # 读取json文件
 class JSONReader(Reader):
-    def parse_file(file_path: Path) -> list:
+    @staticmethod
+    def parse_file(file_path: Path) -> dict:
         try:
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 # text = str(data)
             return data  # text
-        except:
-            return []
+        except Exception as e:
+            print(f"Error reading JSON file {file_path}: {e}")
+            return {}
 
     def parse(self, file_path: Path) -> str:
         try:

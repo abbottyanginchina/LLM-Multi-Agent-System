@@ -11,9 +11,9 @@ import copy
 from typing import List, Union, Literal
 import random
 from tools.json_reader import JSONLReader, JSONReader
-from dataset.data_process import data_process, get_predict
 from datetime import datetime
 from structure.graph import Graph
+from dataset.query import Query
 import agents  # 导入agents模块以注册所有代理
 import llm  # 导入llm模块以注册所有LLM
 import prompt  # 导入prompt模块以注册所有提示集
@@ -52,9 +52,11 @@ def load_config(config_path):
 # 缺少optimized_spatial和optimized_temporal
 def parse_args():
     parser = argparse.ArgumentParser(description="arguement")
-    parser.add_argument("--dataset_json", type=str, default="dataset.jsonl")
+
     parser.add_argument("--result_file", type=str, default=None)
-    parser.add_argument("--llm_name", type=str, default="deepseek-chat")
+    parser.add_argument("--llm_name", type=str, default="")
+    parser.add_argument("--dataset_json", type=str, default="dataset/story_task.json")
+
     parser.add_argument(
         "--mode",
         type=str,
@@ -70,8 +72,6 @@ def parse_args():
         ],
         help="Mode of operation. Default is 'FullConnected'.",
     )
-    parser.add_argument("--lr", type=float, default=0.1, help="learning rate")
-    parser.add_argument("--batch_size", type=int, default=4, help="batch size")
     parser.add_argument(
         "--num_rounds",
         type=int,
@@ -82,16 +82,10 @@ def parse_args():
         "--num_iterations", type=int, default=10, help="The num of training iterations."
     )
     parser.add_argument(
-        "--domain",
-        type=str,
-        default="gsm8k",
-        help="Domain (the same as dataset name), default 'gsm8k'",
-    )
-    parser.add_argument(
         "--agent_names",
         nargs="+",
         type=str,
-        default=["MathSolver"],
+        default=["NormalAgent"],
         help="Specify agent names as a list of strings",
     )
     parser.add_argument(
@@ -104,7 +98,7 @@ def parse_args():
     parser.add_argument(
         "--decision_method",
         type=str,
-        default="FinalRefer",
+        default="FinalDecision",
         help="The decison method of the agentprune",
     )
     args = parser.parse_args()
@@ -121,15 +115,23 @@ async def main():
     result_file = None
     # 数据集处理
     # 构建数据集文件的完整路径
-    dataset_path = ROOT / "dataset" / args.dataset_json
-    dataset = JSONLReader.parse_file(dataset_path)
-    dataset = data_process(dataset)
+    input_query = JSONReader.parse_file(args.dataset_json)
+
+    # 直接使用我们的 Query 类处理数据
+
+    # 创建一个临时的 Query 实例来处理数据转换
+    if input_query:
+        input_dict = Query.record_to_input(input_query)
+    else:
+        print("Failed to load data from JSON file.")
+        return
+
     # 获取当前时间并格式化
     current_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     # 结果保存路径
     result_dir = Path(f"{ROOT}/result")
     result_dir.mkdir(parents=True, exist_ok=True)
-    result_file = result_dir / f"{args.domain}_{args.llm_name}_{current_time}.json"
+    result_file = result_dir / f"{args.llm_name}_{current_time}.json"
 
     agent_names = [
         name for name, num in zip(args.agent_names, args.agent_nums) for _ in range(num)
@@ -139,88 +141,91 @@ async def main():
 
     kwargs = get_kwargs(args.mode, len(agent_names))
     graph = Graph(
-        domain="gsm8k",
-        llm_name=args.llm_name,
         agent_names=agent_names,
         decision_method=decision_method,
         **kwargs,
     )
-    # 优化器
-    optimizer = torch.optim.Adam(
-        [graph.spatial_logits, graph.temporal_logits], lr=args.lr
+
+    print(80 * "-")
+    start_ts = time.time()
+    answer_log_probs = []
+
+    if not input_dict or not input_dict.get("task"):
+        print("No valid task available.")
+        return
+
+    realized_graph = copy.deepcopy(graph)
+    task = input_dict["task"]
+
+    answer_log_probs.append(
+        asyncio.create_task(realized_graph.arun(input_dict, args.num_rounds))
     )
+    raw_results = await asyncio.gather(*answer_log_probs)
+    raw_results = raw_results[0]  # 获取第一个任务的结果
+    utilities: List[float] = []
+    data = load_result(result_file)
 
-    num_batches = int(len(dataset) / args.batch_size)
-    total_solved, total_executed = 0, 0
+    updated_item = {
+        "Question": task,
+        "Answer": raw_results,  # 添加结果到保存的数据中
+        "Mode": args.mode,
+        "Agent_Names": args.agent_names,
+        "Agent_Nums": args.agent_nums,
+        "Decision_Method": args.decision_method,
+        "Timestamp": current_time,
+    }
+    data.append(updated_item)
 
-    for i_batch in range(num_batches):
-        print(f"Batch {i_batch}", 80 * "-")
-        start_ts = time.time()
-        answer_log_probs = []
-        answers = []
+    with open(result_file, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4, ensure_ascii=False)
 
-        current_batch = dataloader(dataset, args.batch_size, i_batch)
-        if current_batch is None:
-            print("No more data available.")
-            break
+    # 同时保存一个纯文本版本（更易读）
+    txt_file = result_file.with_suffix(".txt")
+    with open(txt_file, "w", encoding="utf-8") as file:
+        file.write(f"Question: {task}\n\n")
+        file.write("=" * 60 + "\n")
+        file.write("STORY OUTPUT:\n")
+        file.write("=" * 60 + "\n\n")
+        if isinstance(raw_results, list) and len(raw_results) > 0:
+            file.write(raw_results[0])
+        else:
+            file.write(str(raw_results))
+        file.write(f"\n\n{'=' * 60}\n")
+        file.write(f"Configuration:\n")
+        file.write(f"Mode: {args.mode}\n")
+        file.write(f"Agents: {args.agent_names} (nums: {args.agent_nums})\n")
+        file.write(f"Decision Method: {args.decision_method}\n")
+        file.write(f"Timestamp: {current_time}\n")
 
-        for i_record, record in enumerate(current_batch):
-            realized_graph = copy.deepcopy(graph)
-            task = record["task"]
-            step = record["step"]
-            answer = record["answer"]
-            answers.append(answer)
-            input_dict = {"task": task}
-            answer_log_probs.append(
-                asyncio.create_task(realized_graph.arun(input_dict, args.num_rounds))
-            )
-        raw_results = await asyncio.gather(*answer_log_probs)
-        raw_answers, log_probs = zip(*raw_results)
-        loss_list: List[torch.Tensor] = []
-        utilities: List[float] = []
-        data = load_result(result_file)
+    # 同时保存一个Markdown版本（格式更美观）
+    md_file = result_file.with_suffix(".md")
+    with open(md_file, "w", encoding="utf-8") as file:
+        file.write(f"# Story Generation Result\n\n")
+        file.write(f"**Generated on:** {current_time}\n\n")
+        file.write(f"## Task\n\n{task}\n\n")
+        file.write(f"## Generated Story\n\n")
+        if isinstance(raw_results, list) and len(raw_results) > 0:
+            file.write(raw_results[0])
+        else:
+            file.write(str(raw_results))
+        file.write(f"\n\n## Configuration\n\n")
+        file.write(f"- **Mode:** {args.mode}\n")
+        file.write(f"- **Agents:** {args.agent_names} (nums: {args.agent_nums})\n")
+        file.write(f"- **Decision Method:** {args.decision_method}\n")
 
-        for task, answer, log_prob, true_answer in zip(
-            current_batch, raw_answers, log_probs, answers
-        ):
-            predict_answer = get_predict(answer[0])
-
-            # 安全地比较答案，处理None值
-            try:
-                if predict_answer is not None and true_answer is not None:
-                    is_solved = float(predict_answer) == float(true_answer)
-                else:
-                    is_solved = False
-            except (ValueError, TypeError):
-                is_solved = False
-
-            total_solved = total_solved + is_solved
-            total_executed = total_executed + 1
-            accuracy = total_solved / total_executed
-            utility = is_solved
-            utilities.append(utility)
-            single_loss = -log_prob * utility
-            loss_list.append(single_loss)
-            updated_item = {
-                "Question": task,
-                "Answer": true_answer,
-                "Step": step,
-                "Response": answer,
-                "Attempt answer": predict_answer,
-                "Solved": is_solved,
-                "Total solved": total_solved,
-                "Total executed": total_executed,
-                "Accuracy": accuracy,
-            }
-            data.append(updated_item)
-        with open(result_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=4)
-
-        total_loss = torch.mean(torch.stack(loss_list))
-
-        print(f"Batch time {time.time()-start_ts:.3f}")
-        print(f"Accuracy:{accuracy}")
-        print("utilities:", utilities)
+    print(f"Results saved to: {result_file}")
+    print(f"Text version saved to: {txt_file}")
+    print(f"Markdown version saved to: {md_file}")
+    print(f"\n{'='*60}")
+    print("FINAL STORY OUTPUT:")
+    print(f"{'='*60}")
+    if isinstance(raw_results, list) and len(raw_results) > 0:
+        print(raw_results[0])
+    else:
+        print(raw_results)
+    print(f"{'='*60}")
+    print(f"Batch time {time.time()-start_ts:.3f}")
+    print("utilities:", utilities)
 
 
 def get_kwargs(
@@ -262,7 +267,57 @@ def get_kwargs(
                 matrix[i][j] = 1
         return matrix
 
-    return {"node_kwargs": node_kwargs}
+    # 链式图
+    def generate_chain_graph(n):
+        matrix = [[0] * n for _ in range(n)]
+        for i in range(n - 1):
+            matrix[i][i + 1] = 1
+        return matrix
+
+    # 随机图
+    def generate_random_graph(n, edge_prob=0.3):
+        matrix = [[0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i != j and random.random() < edge_prob:
+                    matrix[i][j] = 1
+        return matrix
+
+    # 根据模式生成对应的邻接矩阵
+    fixed_spatial_masks = None
+    fixed_temporal_masks = None
+
+    if mode == "FullConnected":
+        # 全连接：所有节点互相连接（除了自己）
+        fixed_spatial_masks = [[1 if i != j else 0 for j in range(N)] for i in range(N)]
+    elif mode == "DirectAnswer":
+        # 直接回答：没有节点间连接
+        fixed_spatial_masks = [[0 for _ in range(N)] for _ in range(N)]
+    elif mode == "Chain":
+        # 链式连接
+        fixed_spatial_masks = generate_chain_graph(N)
+    elif mode == "Random":
+        # 随机连接
+        fixed_spatial_masks = generate_random_graph(N)
+    elif mode == "Layered":
+        # 层状连接
+        fixed_spatial_masks = generate_layered_graph(N)
+    elif mode == "Star":
+        # 星型连接
+        fixed_spatial_masks = generate_star_graph(N)
+    elif mode == "Debate":
+        # 辩论模式：所有节点互相连接
+        fixed_spatial_masks = [[1 if i != j else 0 for j in range(N)] for i in range(N)]
+
+    # 时间连接默认为全连接
+    if fixed_temporal_masks is None:
+        fixed_temporal_masks = [[1 for j in range(N)] for i in range(N)]
+
+    return {
+        "node_kwargs": node_kwargs,
+        "fixed_spatial_masks": fixed_spatial_masks,
+        "fixed_temporal_masks": fixed_temporal_masks,
+    }
 
 
 if __name__ == "__main__":
