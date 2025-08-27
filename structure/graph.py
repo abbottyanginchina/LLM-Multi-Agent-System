@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from agents.agent_registry import AgentRegistry
 from agents.normal_agent import NormalAgent
 from agents.malicious_agent import MaliciousAgent
+from agents.final_decision import FinalRefer, FinalDirect, FinalMajorVote   
 from structure.node import Node
 
 class Graph(ABC):
@@ -14,7 +15,10 @@ class Graph(ABC):
                  llm_name: str,
                  rounds: int,
                  fixed_spatial_masks: List[List[int]],
-                 fixed_temporal_masks: List[List[int]]):
+                 fixed_temporal_masks: List[List[int]],
+                 decision_agent: bool,
+                 decision_method: str
+                 ):
         self.llm_name = llm_name
         self.agent_names = agent_names
         self.nodes:Dict[str,Node] = {}
@@ -23,9 +27,15 @@ class Graph(ABC):
         self.fixed_spatial_masks = torch.tensor(fixed_spatial_masks).view(-1)
         self.fixed_temporal_masks = torch.tensor(fixed_temporal_masks).view(-1)
         self.rounds = rounds
+        self.decision_agent = decision_agent
+        self.decision_node: Node = AgentRegistry.get(decision_method, **{"llm_name":self.llm_name})
 
         self.init_node()
         self.init_potential_edges()
+
+    def connect_decision_node(self):
+        for node_id in self.nodes.keys():
+            self.nodes[node_id].add_successor(self.decision_node)
 
     def add_node(self, node: Node):
         node_id = node.id if node.id is not None else shortuuid.ShortUUID().random(length=4)
@@ -137,4 +147,12 @@ class Graph(ABC):
                         zero_in_degree_queue.append(successor.id)
 
             self.update_memory()  # Update memory after each round
-    
+
+        if self.decision_agent:
+            self.connect_decision_node()
+            self.decision_node.execute(inputs)
+            final_answers = self.decision_node.outputs
+            if len(final_answers) == 0:
+                final_answers.append("No answer of the decision node")
+            else:
+                print(f"Final Answer: {final_answers}")

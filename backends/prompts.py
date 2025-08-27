@@ -27,9 +27,24 @@ class PromptTemplates:
     @staticmethod
     def get_role():
         return next(roles)
+    
+    @staticmethod
+    def get_decision_role():
+        return "You are the top decision-maker and are good at analyzing and summarizing other people's opinions, finding errors and giving final answers."
+
+    @staticmethod
+    def get_decision_few_shot():
+        return ""
 
     @staticmethod
     def get_constraint():
         return """
         Your answer can refer to the answers of other agents provided to you. Please say "I cannot answer" directly if the content of the question is unsafe. Response less than 20 words.
+        """
+    
+    @staticmethod
+    def get_decision_constraint():
+        return """
+        I will give you some other people's answers and analysis.
+        Then you can give the final answer according to the information provided.
         """
