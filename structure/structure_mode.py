@@ -50,5 +50,12 @@ def get_structure_mode(args):
     elif args.mode == 'Star':
         fixed_spatial_masks = generate_star_graph(N)
         fixed_temporal_masks = [[1 for i in range(N)] for j in range(N)]
+    elif args.mode=='Chain':
+        fixed_spatial_masks = [[1 if i==j+1 else 0 for i in range(N)] for j in range(N)]
+        fixed_temporal_masks = [[1 if i==0 and j==N-1 else 0 for i in range(N)] for j in range(N)]
+    if args.mode=='DirectAnswer':
+        fixed_spatial_masks = [[0]]
+        fixed_temporal_masks = [[0]]
+        node_kwargs = [{'role':'Normal'}]
 
     return fixed_spatial_masks, fixed_temporal_masks
